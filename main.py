@@ -59,6 +59,7 @@ _pipe = pipeline(
     model="google/medasr",
     device=-1,  # CPU; change to 0 for GPU
     token=hf_token if hf_token else None,
+    trust_remote_code=True,  # required: model uses custom lasr_ctc architecture
 )
 logger.info("Model loaded and ready.")
 
