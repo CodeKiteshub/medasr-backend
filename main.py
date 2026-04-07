@@ -1,5 +1,5 @@
 """
-MedASR FastAPI backend — wraps google/medasr (HuggingFace) via transformers pipeline.
+MedASR FastAPI backend — wraps google/medasr (HuggingFace) for medical ASR.
 
 Endpoint:
   POST /transcribe
@@ -13,27 +13,28 @@ Required Railway environment variable:
   Get one at: https://huggingface.co/settings/tokens
   Also accept the model licence at: https://huggingface.co/google/medasr
 
+Requires transformers>=5.0.0 (installed from git — lasr_ctc arch not in 4.x).
 Runs CPU-only. Inference time: ~15-30s per clip on CPU.
-Model is downloaded on first startup (~420MB) and cached in /tmp/hf_cache.
 """
 
 import logging
 import os
+import tempfile
+import wave
 
 import numpy as np
+import torch
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import pipeline
+from transformers import AutoModelForCTC, AutoProcessor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Point HF cache to /tmp so it persists within the container session.
+# ── HuggingFace auth ──────────────────────────────────────────────────────────
 os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
 
-# transformers / huggingface_hub automatically reads HUGGINGFACE_HUB_TOKEN.
-# We just copy HF_TOKEN → HUGGINGFACE_HUB_TOKEN so Railway's variable name works.
 hf_token = os.environ.get("HF_TOKEN", "").strip()
 if hf_token:
     os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
@@ -41,6 +42,18 @@ if hf_token:
 else:
     logger.warning("HF_TOKEN not set — gated model download will fail.")
 
+# ── Load model and processor at startup ───────────────────────────────────────
+MODEL_ID = "google/medasr"
+SAMPLE_RATE = 16000
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+logger.info("Loading %s on %s…", MODEL_ID, device)
+processor = AutoProcessor.from_pretrained(MODEL_ID, token=hf_token or None)
+model = AutoModelForCTC.from_pretrained(MODEL_ID, token=hf_token or None).to(device)
+model.eval()
+logger.info("Model loaded and ready.")
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(title="MedASR", version="1.0.0")
 
 app.add_middleware(
@@ -49,19 +62,6 @@ app.add_middleware(
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
-
-# Load model once at startup.
-# First boot downloads ~420MB weights — takes 60-120s depending on Railway bandwidth.
-# Subsequent restarts use /tmp/hf_cache (cache survives container restarts on Railway).
-logger.info("Loading google/medasr model…")
-_pipe = pipeline(
-    "automatic-speech-recognition",
-    model="google/medasr",
-    device=-1,  # CPU; change to 0 for GPU
-    token=hf_token if hf_token else None,
-    trust_remote_code=True,  # required: model uses custom lasr_ctc architecture
-)
-logger.info("Model loaded and ready.")
 
 
 @app.get("/health")
@@ -78,25 +78,30 @@ async def transcribe(file: UploadFile = File(...)):
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio file")
 
-    # Convert raw PCM bytes → float32 numpy array normalised to [-1, 1]
+    # Convert raw PCM int16 bytes → float32 numpy array normalised to [-1, 1]
     audio_int16 = np.frombuffer(raw, dtype=np.int16)
     audio_float32 = audio_int16.astype(np.float32) / 32768.0
 
     if audio_float32.size == 0:
         raise HTTPException(status_code=400, detail="No audio samples in file")
 
-    logger.info(
-        "Transcribing %d samples (%.1fs)…",
-        audio_float32.size,
-        audio_float32.size / 16000,
-    )
+    duration = audio_float32.size / SAMPLE_RATE
+    logger.info("Transcribing %d samples (%.1fs)…", audio_float32.size, duration)
 
     try:
-        result = _pipe(
-            {"raw": audio_float32, "sampling_rate": 16000},
-            return_timestamps=False,
-        )
-        transcript: str = result.get("text", "").strip()  # type: ignore[union-attr]
+        # Prepare inputs
+        inputs = processor(
+            audio_float32,
+            sampling_rate=SAMPLE_RATE,
+            return_tensors="pt",
+            padding=True,
+        ).to(device)
+
+        # Run inference
+        with torch.no_grad():
+            outputs = model.generate(**inputs)
+
+        transcript = processor.batch_decode(outputs)[0].strip()
     except Exception as exc:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
