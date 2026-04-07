@@ -58,6 +58,7 @@ _pipe = pipeline(
     "automatic-speech-recognition",
     model="google/medasr",
     device=-1,  # CPU; change to 0 for GPU
+    token=hf_token if hf_token else None,
 )
 logger.info("Model loaded and ready.")
 
