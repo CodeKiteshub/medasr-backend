@@ -1,0 +1,14 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Railway will expose the PORT env var automatically.
+# Restart on crash.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# Sleep after 30 minutes of no traffic to save cost.
+# Wake-up takes ~10-20s (container already built).
+# Comment this out if you need always-on behaviour.
+sleepApplication = true
