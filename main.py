@@ -9,8 +9,9 @@ Response:
   { "transcript": "..." }
 
 Required Railway environment variable:
-  HF_TOKEN — HuggingFace read token (model is gated, requires licence acceptance)
+  HF_TOKEN — HuggingFace read token (model is gated, requires licence acceptance).
   Get one at: https://huggingface.co/settings/tokens
+  Also accept the model licence at: https://huggingface.co/google/medasr
 
 Runs CPU-only. Inference time: ~15-30s per clip on CPU.
 Model is downloaded on first startup (~420MB) and cached in /tmp/hf_cache.
@@ -23,23 +24,22 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from huggingface_hub import login
 from transformers import pipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Authenticate with HuggingFace using the token set in Railway Variables.
-# Without this the gated model download returns HTTP 401.
-hf_token = os.environ.get("HF_TOKEN", "")
-if hf_token:
-    login(token=hf_token, add_to_git_credential=False)
-    logger.info("HuggingFace login successful.")
-else:
-    logger.warning("HF_TOKEN not set — model download will fail for gated models.")
-
-# Point HF cache to /tmp so it persists within the running container session.
+# Point HF cache to /tmp so it persists within the container session.
 os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
+
+# transformers / huggingface_hub automatically reads HUGGINGFACE_HUB_TOKEN.
+# We just copy HF_TOKEN → HUGGINGFACE_HUB_TOKEN so Railway's variable name works.
+hf_token = os.environ.get("HF_TOKEN", "").strip()
+if hf_token:
+    os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+    logger.info("HF_TOKEN found — will authenticate with HuggingFace.")
+else:
+    logger.warning("HF_TOKEN not set — gated model download will fail.")
 
 app = FastAPI(title="MedASR", version="1.0.0")
 
