@@ -2,14 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for torch CPU, librosa (needs libsndfile)
+# System deps for torch CPU and librosa (needs libsndfile)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     libsndfile1 \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps (includes transformers from git for >=5.0 with lasr_ctc support)
+# Install Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
