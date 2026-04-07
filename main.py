@@ -8,11 +8,14 @@ Endpoint:
 Response:
   { "transcript": "..." }
 
-Runs CPU-only (Railway free tier / Pro without GPU).
-Inference time: ~15-30s per audio clip on CPU, ~2-5s with GPU.
+Required Railway environment variable:
+  HF_TOKEN — HuggingFace read token (model is gated, requires licence acceptance)
+  Get one at: https://huggingface.co/settings/tokens
+
+Runs CPU-only. Inference time: ~15-30s per clip on CPU.
+Model is downloaded on first startup (~420MB) and cached in /tmp/hf_cache.
 """
 
-import io
 import logging
 import os
 
@@ -20,10 +23,23 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from huggingface_hub import login
 from transformers import pipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Authenticate with HuggingFace using the token set in Railway Variables.
+# Without this the gated model download returns HTTP 401.
+hf_token = os.environ.get("HF_TOKEN", "")
+if hf_token:
+    login(token=hf_token, add_to_git_credential=False)
+    logger.info("HuggingFace login successful.")
+else:
+    logger.warning("HF_TOKEN not set — model download will fail for gated models.")
+
+# Point HF cache to /tmp so it persists within the running container session.
+os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
 
 app = FastAPI(title="MedASR", version="1.0.0")
 
@@ -34,14 +50,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load model once at startup — takes ~30-60s on first boot (downloads ~420MB weights)
+# Load model once at startup.
+# First boot downloads ~420MB weights — takes 60-120s depending on Railway bandwidth.
+# Subsequent restarts use /tmp/hf_cache (cache survives container restarts on Railway).
 logger.info("Loading google/medasr model…")
 _pipe = pipeline(
     "automatic-speech-recognition",
     model="google/medasr",
     device=-1,  # CPU; change to 0 for GPU
 )
-logger.info("Model loaded.")
+logger.info("Model loaded and ready.")
 
 
 @app.get("/health")
@@ -53,7 +71,6 @@ def health():
 async def transcribe(file: UploadFile = File(...)):
     """
     Accepts raw PCM 16kHz 16-bit mono audio bytes and returns the transcript.
-    The Flutter app sends audio recorded at 16 kHz, LINEAR16 (int16), mono.
     """
     raw = await file.read()
     if not raw:
@@ -66,7 +83,11 @@ async def transcribe(file: UploadFile = File(...)):
     if audio_float32.size == 0:
         raise HTTPException(status_code=400, detail="No audio samples in file")
 
-    logger.info("Transcribing %d samples (%.1fs)…", audio_float32.size, audio_float32.size / 16000)
+    logger.info(
+        "Transcribing %d samples (%.1fs)…",
+        audio_float32.size,
+        audio_float32.size / 16000,
+    )
 
     try:
         result = _pipe(

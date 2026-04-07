@@ -1,5 +1,4 @@
-# ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -12,17 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the model weights at build time so the first request is fast.
-# This adds ~420MB to the image but avoids a 60s cold download on first request.
-RUN python - <<'EOF'
-from transformers import pipeline
-pipeline("automatic-speech-recognition", model="google/medasr", device=-1)
-print("Model cached.")
-EOF
-
-# ── Stage 2: app ──────────────────────────────────────────────────────────────
 COPY main.py .
 
 EXPOSE 8000
 
+# Model weights are downloaded at first startup using HF_TOKEN env var.
+# Set HF_TOKEN in Railway → Variables before deploying.
 CMD ["python", "main.py"]
